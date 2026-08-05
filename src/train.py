@@ -9,6 +9,7 @@ representative sweep, documented explicitly as a deliberate limitation.
 """
 from __future__ import annotations
 
+import copy
 import time
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
@@ -62,6 +63,26 @@ def directional_accuracy(pred: np.ndarray, target: np.ndarray) -> float:
     return float(np.mean(pred_sign == target_sign))
 
 
+def directional_accuracy_deadzone(pred: np.ndarray, target: np.ndarray, quantile: float = 0.5):
+    """Directional accuracy restricted to the half of test points where the
+    model's prediction magnitude is largest (i.e. abstain on its
+    least-confident half). Returns (accuracy, coverage) -- coverage is the
+    fraction of points actually scored. This is a legitimate practitioner
+    technique (only act on high-conviction predictions), but it trades away
+    coverage for accuracy, so both numbers must be read together -- quoting
+    the accuracy alone without the coverage is misleading.
+    """
+    pred = pred.ravel()
+    target = target.ravel()
+    thresh = np.quantile(np.abs(pred), quantile)
+    mask = np.abs(pred) >= thresh
+    if mask.sum() == 0:
+        return float("nan"), 0.0
+    acc = float(np.mean(np.sign(pred[mask]) == np.sign(target[mask])))
+    coverage = float(mask.mean())
+    return acc, coverage
+
+
 def to_tensor(x: np.ndarray) -> torch.Tensor:
     return torch.as_tensor(x, dtype=torch.float32)
 
@@ -84,6 +105,45 @@ def _inverse(pred_scaled: np.ndarray, mean: float, std: float) -> np.ndarray:
     return pred_scaled * std + mean
 
 
+def _fit_with_val_selection(model, u_train, v_train, u_val, v_val, epochs, batch_size, g,
+                             step_fn, predict_fn, end_epoch_fn=None):
+    """Train for `epochs`, evaluating on the validation split after every
+    epoch, and return the snapshot with the lowest validation RMSE -- a
+    poor-man's early stopping that avoids reporting whatever the final epoch
+    happens to land on (which can be a lucky/unlucky outlier, especially at
+    small train sizes). Also returns that best validation RMSE (scaled
+    space) so callers can use it as a model-selection signal.
+    """
+    best_val_rmse = float("inf")
+    best_state = copy.deepcopy(model)
+    for epoch in range(epochs):
+        for u_b, v_b in batches(u_train, v_train, batch_size, g):
+            step_fn(model, u_b, v_b)
+        if end_epoch_fn:
+            end_epoch_fn(model)
+        with torch.no_grad():
+            val_pred = predict_fn(model, u_val).numpy()
+        val_rmse = rmse(val_pred, v_val)
+        if val_rmse < best_val_rmse:
+            best_val_rmse = val_rmse
+            best_state = copy.deepcopy(model)
+    return best_state, best_val_rmse
+
+
+def _finalize_result(model, pred_scaled: np.ndarray, ds: PreparedDataset, val_rmse_scaled: float) -> dict:
+    pred_orig = _inverse(pred_scaled, ds.scaler_mean, ds.scaler_std)
+    target_orig = _inverse(ds.v_test, ds.scaler_mean, ds.scaler_std)
+    deadzone_acc, deadzone_coverage = directional_accuracy_deadzone(pred_orig, target_orig)
+    return {
+        "rmse": rmse(pred_orig, target_orig),
+        "directional_accuracy": directional_accuracy(pred_orig, target_orig),
+        "directional_accuracy_deadzone50": deadzone_acc,
+        "deadzone_coverage": deadzone_coverage,
+        "val_rmse_scaled": val_rmse_scaled,
+        "num_params": model.num_params(),
+    }
+
+
 def train_and_eval_crbm(ds: PreparedDataset, seed: int, epochs: int = DEFAULT_EPOCHS,
                          batch_size: int = DEFAULT_BATCH_SIZE, hparams: dict = None) -> dict:
     hp = {**DEFAULT_HPARAMS["crbm"], **(hparams or {})}
@@ -94,22 +154,23 @@ def train_and_eval_crbm(ds: PreparedDataset, seed: int, epochs: int = DEFAULT_EP
     model = CRBM(cfg)
 
     u_train, v_train = to_tensor(ds.u_train), to_tensor(ds.v_train)
-    u_test, v_test = to_tensor(ds.u_test), to_tensor(ds.v_test)
+    u_val = to_tensor(ds.u_val)
+    u_test = to_tensor(ds.u_test)
 
-    for epoch in range(epochs):
-        for u_b, v_b in batches(u_train, v_train, batch_size, g):
-            model.train_step(v_b, u_b)
+    def step_fn(m, u_b, v_b):
+        m.train_step(v_b, u_b)
+
+    def predict_fn(m, u):
+        return m.mean_field_predict(u)
+
+    best_model, best_val_rmse = _fit_with_val_selection(
+        model, u_train, v_train, u_val, ds.v_val, epochs, batch_size, g, step_fn, predict_fn
+    )
 
     with torch.no_grad():
-        pred = model.mean_field_predict(u_test).numpy()
+        pred = predict_fn(best_model, u_test).numpy()
 
-    pred_orig = _inverse(pred, ds.scaler_mean, ds.scaler_std)
-    target_orig = _inverse(ds.v_test, ds.scaler_mean, ds.scaler_std)
-    return {
-        "rmse": rmse(pred_orig, target_orig),
-        "directional_accuracy": directional_accuracy(pred_orig, target_orig),
-        "num_params": model.num_params(),
-    }
+    return _finalize_result(best_model, pred, ds, best_val_rmse)
 
 
 def train_and_eval_qcrbm(ds: PreparedDataset, seed: int, epochs: int = DEFAULT_EPOCHS,
@@ -122,22 +183,23 @@ def train_and_eval_qcrbm(ds: PreparedDataset, seed: int, epochs: int = DEFAULT_E
     model = QCRBM(cfg)
 
     u_train, v_train = to_tensor(ds.u_train), to_tensor(ds.v_train)
-    u_test, v_test = to_tensor(ds.u_test), to_tensor(ds.v_test)
+    u_val = to_tensor(ds.u_val)
+    u_test = to_tensor(ds.u_test)
 
-    for epoch in range(epochs):
-        for u_b, v_b in batches(u_train, v_train, batch_size, g):
-            model.train_step(v_b, u_b)
+    def step_fn(m, u_b, v_b):
+        m.train_step(v_b, u_b)
+
+    def predict_fn(m, u):
+        return m.mean_field_predict(u)
+
+    best_model, best_val_rmse = _fit_with_val_selection(
+        model, u_train, v_train, u_val, ds.v_val, epochs, batch_size, g, step_fn, predict_fn
+    )
 
     with torch.no_grad():
-        pred = model.mean_field_predict(u_test).numpy()
+        pred = predict_fn(best_model, u_test).numpy()
 
-    pred_orig = _inverse(pred, ds.scaler_mean, ds.scaler_std)
-    target_orig = _inverse(ds.v_test, ds.scaler_mean, ds.scaler_std)
-    return {
-        "rmse": rmse(pred_orig, target_orig),
-        "directional_accuracy": directional_accuracy(pred_orig, target_orig),
-        "num_params": model.num_params(),
-    }
+    return _finalize_result(best_model, pred, ds, best_val_rmse)
 
 
 def train_and_eval_qfeatureqrbm(ds: PreparedDataset, seed: int, epochs: int = DEFAULT_EPOCHS,
@@ -153,23 +215,27 @@ def train_and_eval_qfeatureqrbm(ds: PreparedDataset, seed: int, epochs: int = DE
     # window `u` as the lag vector (both are the last L=U=10 values, matching
     # the base paper's fixed L=U=10 default, Sec 5.1).
     u_train, v_train = to_tensor(ds.u_train), to_tensor(ds.v_train)
-    u_test, v_test = to_tensor(ds.u_test), to_tensor(ds.v_test)
+    u_val = to_tensor(ds.u_val)
+    u_test = to_tensor(ds.u_test)
 
-    for epoch in range(epochs):
-        for u_b, v_b in batches(u_train, v_train, batch_size, g):
-            model.train_step(v_b, u_b)
-        model.end_epoch()
+    def step_fn(m, u_b, v_b):
+        m.train_step(v_b, u_b)
+
+    def end_epoch_fn(m):
+        m.end_epoch()
+
+    def predict_fn(m, u):
+        return m.mean_field_predict(u)
+
+    best_model, best_val_rmse = _fit_with_val_selection(
+        model, u_train, v_train, u_val, ds.v_val, epochs, batch_size, g,
+        step_fn, predict_fn, end_epoch_fn=end_epoch_fn,
+    )
 
     with torch.no_grad():
-        pred = model.mean_field_predict(u_test).numpy()
+        pred = predict_fn(best_model, u_test).numpy()
 
-    pred_orig = _inverse(pred, ds.scaler_mean, ds.scaler_std)
-    target_orig = _inverse(ds.v_test, ds.scaler_mean, ds.scaler_std)
-    return {
-        "rmse": rmse(pred_orig, target_orig),
-        "directional_accuracy": directional_accuracy(pred_orig, target_orig),
-        "num_params": model.num_params(),
-    }
+    return _finalize_result(best_model, pred, ds, best_val_rmse)
 
 
 def train_and_eval_qqrbm(ds: PreparedDataset, seed: int, epochs: int = DEFAULT_EPOCHS,
@@ -185,9 +251,11 @@ def train_and_eval_qqrbm(ds: PreparedDataset, seed: int, epochs: int = DEFAULT_E
     # Sec 5.5) and needs V>=2 visible qubits, so we pad the scalar target
     # with a zero dummy dimension.
     u_train_full, v_train = to_tensor(ds.u_train), to_tensor(ds.v_train)
-    u_test_full, v_test = to_tensor(ds.u_test), to_tensor(ds.v_test)
+    u_val_full = to_tensor(ds.u_val)
+    u_test_full = to_tensor(ds.u_test)
 
     u_train = u_train_full[:, -cfg.U_qq:]
+    u_val = u_val_full[:, -cfg.U_qq:]
     u_test = u_test_full[:, -cfg.U_qq:]
 
     def pad_v(v):
@@ -197,20 +265,20 @@ def train_and_eval_qqrbm(ds: PreparedDataset, seed: int, epochs: int = DEFAULT_E
 
     v_train_p = pad_v(v_train)
 
-    for epoch in range(epochs):
-        for u_b, v_b in batches(u_train, v_train_p, batch_size, g):
-            model.train_step(v_b, u_b)
+    def step_fn(m, u_b, v_b):
+        m.train_step(v_b, u_b)
+
+    def predict_fn(m, u):
+        return m.mean_field_predict(u)[:, 0:1]
+
+    best_model, best_val_rmse = _fit_with_val_selection(
+        model, u_train, v_train_p, u_val, ds.v_val, epochs, batch_size, g, step_fn, predict_fn
+    )
 
     with torch.no_grad():
-        pred = model.mean_field_predict(u_test).numpy()[:, 0:1]
+        pred = predict_fn(best_model, u_test).numpy()
 
-    pred_orig = _inverse(pred, ds.scaler_mean, ds.scaler_std)
-    target_orig = _inverse(ds.v_test, ds.scaler_mean, ds.scaler_std)
-    return {
-        "rmse": rmse(pred_orig, target_orig),
-        "directional_accuracy": directional_accuracy(pred_orig, target_orig),
-        "num_params": model.num_params(),
-    }
+    return _finalize_result(best_model, pred, ds, best_val_rmse)
 
 
 MODEL_TRAINERS = {
@@ -219,6 +287,42 @@ MODEL_TRAINERS = {
     "QFeatureQRBM": train_and_eval_qfeatureqrbm,
     "QQRBM": train_and_eval_qqrbm,
 }
+
+
+# ----------------------------------------------------------------------------
+# Real (but still deliberately small) hyperparameter search
+# ----------------------------------------------------------------------------
+# DEFAULT_HPARAMS above is one fixed guess. This is an actual search: each
+# candidate is trained full-length with validation-based model selection
+# (_fit_with_val_selection), and the candidate with the lowest validation
+# RMSE is kept. Search spaces are kept small (2-3 candidates/model) to bound
+# runtime -- this is still far short of the base paper's full symmetric grid,
+# but it is a genuine search rather than a single fixed configuration.
+
+HPARAM_SEARCH_SPACE = {
+    "CRBM": [{"H": 2}, {"H": 4}, {"H": 8}],
+    "QCRBM": [{"H": 4}, {"H": 8}],
+    "QFeatureQRBM": [{"H": 2}, {"H": 4}],
+    "QQRBM": [{"H": 2}, {"H": 4}],
+}
+
+
+def train_and_eval_with_search(model_name: str, ds: PreparedDataset, seed: int,
+                                epochs: int = DEFAULT_EPOCHS, batch_size: int = DEFAULT_BATCH_SIZE,
+                                search_space: List[dict] = None) -> dict:
+    """Try every candidate hparam dict for `model_name`, train each with
+    validation-based model selection, and return the result for the
+    candidate with the lowest validation RMSE."""
+    space = search_space or HPARAM_SEARCH_SPACE.get(model_name, [{}])
+    trainer = MODEL_TRAINERS[model_name]
+
+    best_result = None
+    for cand_hp in space:
+        result = trainer(ds, seed, epochs=epochs, batch_size=batch_size, hparams=cand_hp)
+        result["hparams_tried"] = cand_hp
+        if best_result is None or result["val_rmse_scaled"] < best_result["val_rmse_scaled"]:
+            best_result = result
+    return best_result
 
 
 # ----------------------------------------------------------------------------
@@ -231,12 +335,20 @@ def run_scaling_grid(
     seeds: List[int] = None,
     epochs: int = DEFAULT_EPOCHS,
     checkpoint_path: Optional[str] = None,
+    use_hparam_search: bool = False,
 ) -> pd.DataFrame:
     """Train every model on every (asset, train_size, seed) combination.
 
     Checkpoints results to `checkpoint_path` after every run (important on
     Colab, where sessions can disconnect mid-grid) and resumes from it if the
     file already exists and contains completed rows.
+
+    Each per-model trainer already selects its best epoch by validation RMSE
+    (`_fit_with_val_selection`) rather than reporting a fixed final epoch. Set
+    `use_hparam_search=True` to additionally search a small candidate grid
+    per model (`HPARAM_SEARCH_SPACE`) and keep whichever candidate has the
+    lowest validation RMSE -- a real (if still deliberately small) search,
+    instead of the single fixed `DEFAULT_HPARAMS` guess.
     """
     models = models or list(MODEL_TRAINERS.keys())
     seeds = seeds or DEFAULT_SEEDS
@@ -266,10 +378,17 @@ def run_scaling_grid(
                         continue
                     t0 = time.time()
                     try:
-                        result = MODEL_TRAINERS[model_name](ds, seed, epochs=epochs)
+                        if use_hparam_search:
+                            result = train_and_eval_with_search(model_name, ds, seed, epochs=epochs)
+                        else:
+                            result = MODEL_TRAINERS[model_name](ds, seed, epochs=epochs)
                     except Exception as e:
                         print(f"[FAIL] {key}: {e}")
-                        result = {"rmse": np.nan, "directional_accuracy": np.nan, "num_params": np.nan}
+                        result = {
+                            "rmse": np.nan, "directional_accuracy": np.nan,
+                            "directional_accuracy_deadzone50": np.nan, "deadzone_coverage": np.nan,
+                            "num_params": np.nan,
+                        }
                     elapsed = time.time() - t0
 
                     row = {
@@ -279,13 +398,17 @@ def run_scaling_grid(
                         "model": model_name,
                         "rmse": result["rmse"],
                         "directional_accuracy": result.get("directional_accuracy", np.nan),
+                        "directional_accuracy_deadzone50": result.get("directional_accuracy_deadzone50", np.nan),
+                        "deadzone_coverage": result.get("deadzone_coverage", np.nan),
                         "num_params": result["num_params"],
                         "elapsed_s": elapsed,
                     }
                     rows.append(row)
                     completed += 1
                     print(f"[{completed}/{total}] {key} -> RMSE={result['rmse']:.6g} "
-                          f"DirAcc={result.get('directional_accuracy', float('nan')):.3f} ({elapsed:.1f}s)")
+                          f"DirAcc={result.get('directional_accuracy', float('nan')):.3f} "
+                          f"DirAcc@dz50={result.get('directional_accuracy_deadzone50', float('nan')):.3f} "
+                          f"(cov={result.get('deadzone_coverage', float('nan')):.2f}) ({elapsed:.1f}s)")
 
                     if checkpoint_path:
                         pd.DataFrame(rows).to_csv(checkpoint_path, index=False)

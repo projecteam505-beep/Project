@@ -53,6 +53,11 @@ def parse_args():
                          "yfinance. Use this when the network is restricted (e.g. a sandboxed CI "
                          "environment) and no real market data is reachable. Results from this mode "
                          "are NOT real market results -- only useful for exercising the pipeline.")
+    p.add_argument("--hparam-search", action="store_true",
+                    help="Search a small per-model hyperparameter grid (src/train.py "
+                         "HPARAM_SEARCH_SPACE) and keep whichever candidate has the best "
+                         "validation RMSE, instead of the single fixed DEFAULT_HPARAMS guess. "
+                         "Multiplies runtime by roughly the number of candidates per model.")
     p.add_argument("--results-dir", default="results",
                     help="Where to write all output CSVs / figures.")
     p.add_argument("--data-dir", default="data",
@@ -149,7 +154,8 @@ def main():
     # ------------------------------------------------------------------
     print("=" * 70)
     print("STEP 4: Full scaling grid "
-          f"(models={args.models}, seeds={args.seeds}, epochs={args.epochs})")
+          f"(models={args.models}, seeds={args.seeds}, epochs={args.epochs}, "
+          f"hparam_search={args.hparam_search})")
     print("=" * 70)
     results = run_scaling_grid(
         prepared,
@@ -157,10 +163,12 @@ def main():
         seeds=args.seeds,
         epochs=args.epochs,
         checkpoint_path=f"{args.results_dir}/scaling_grid_results.csv",
+        use_hparam_search=args.hparam_search,
     )
 
     print("\nPer-model summary (mean +/- SD across ticker/train_size/seed runs):")
-    summary_metrics = results.groupby("model")[["rmse", "directional_accuracy"]].agg(["mean", "std"])
+    summary_cols = ["rmse", "directional_accuracy", "directional_accuracy_deadzone50", "deadzone_coverage"]
+    summary_metrics = results.groupby("model")[summary_cols].agg(["mean", "std"])
     print(summary_metrics)
     print("\nNote: directional_accuracy is sign(pred) == sign(actual) on real-scale returns. "
           "~0.50 = coin flip; real financial series are close to a random walk, so this rarely "
