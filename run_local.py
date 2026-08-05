@@ -88,13 +88,18 @@ def main():
         print("STEP 1: Downloading / loading market data")
     print("=" * 70)
     if args.synthetic:
+        # Cache under a run-scoped filename, distinct from the canonical
+        # full-universe data/prices_synthetic.csv (generated once for all
+        # DEFAULT_TICKERS and delivered/committed separately) -- otherwise a
+        # run against a ticker subset (e.g. --tickers AAPL) would silently
+        # overwrite the canonical dataset file with just that subset.
         prices = generate_research_calibrated_prices(
-            args.tickers, cache_path=f"{args.data_dir}/prices_synthetic.csv"
+            args.tickers, cache_path=f"{args.data_dir}/prices_synthetic_run.csv"
         )
     else:
         prices = download_prices(args.tickers, cache_path=f"{args.data_dir}/prices_raw.csv")
     log_returns = compute_log_returns(prices)
-    log_returns.to_csv(f"{args.data_dir}/log_returns.csv")
+    log_returns.to_csv(f"{args.data_dir}/log_returns_run.csv")
     print(f"Assets: {list(log_returns.columns)}")
     print(f"History: {log_returns.index.min()} -> {log_returns.index.max()} "
           f"({len(log_returns)} observations)")
