@@ -24,9 +24,9 @@ import os
 import pandas as pd
 
 from src.data import (
-    download_prices, generate_synthetic_prices, compute_log_returns, adf_report,
-    correlation_table, build_all_splits, regime_diagnostics_table, prepare_all,
-    DEFAULT_TICKERS, DEFAULT_TRAIN_SIZES,
+    download_prices, generate_research_calibrated_prices, stylized_facts_report,
+    compute_log_returns, adf_report, correlation_table, build_all_splits,
+    regime_diagnostics_table, prepare_all, DEFAULT_TICKERS, DEFAULT_TRAIN_SIZES,
 )
 from src.train import run_scaling_grid, DEFAULT_SEEDS, DEFAULT_EPOCHS
 from src.stats import compare_all_to_reference, power_analysis, window_information_ceiling
@@ -49,15 +49,21 @@ def parse_args():
     p.add_argument("--skip-smoketest", action="store_true",
                     help="Skip the small pre-flight smoke test and go straight to the full grid.")
     p.add_argument("--synthetic", action="store_true",
-                    help="Use generated proxy price series instead of downloading real data via "
-                         "yfinance. Use this when the network is restricted (e.g. a sandboxed CI "
-                         "environment) and no real market data is reachable. Results from this mode "
-                         "are NOT real market results -- only useful for exercising the pipeline.")
+                    help="Use a GJR-GARCH(1,1) + Student-t proxy price series (calibrated to the "
+                         "stylized facts documented in docs/data_research.md) instead of downloading "
+                         "real data via yfinance. Use this when the network is restricted (e.g. a "
+                         "sandboxed CI environment) and no real market data is reachable. Results "
+                         "from this mode are NOT real market results -- only useful for exercising "
+                         "the pipeline and reproducing the statistical *shape* of real returns.")
     p.add_argument("--hparam-search", action="store_true",
                     help="Search a small per-model hyperparameter grid (src/train.py "
                          "HPARAM_SEARCH_SPACE) and keep whichever candidate has the best "
                          "validation RMSE, instead of the single fixed DEFAULT_HPARAMS guess. "
                          "Multiplies runtime by roughly the number of candidates per model.")
+    p.add_argument("--quiet-epochs", action="store_true",
+                    help="Suppress the per-epoch validation RMSE/accuracy lines during training "
+                         "(printed by default). Useful for very large grids where per-epoch logging "
+                         "would be overwhelming.")
     p.add_argument("--results-dir", default="results",
                     help="Where to write all output CSVs / figures.")
     p.add_argument("--data-dir", default="data",
@@ -76,13 +82,13 @@ def main():
     # ------------------------------------------------------------------
     print("=" * 70)
     if args.synthetic:
-        print("STEP 1: Generating SYNTHETIC proxy price data (--synthetic set -- "
-              "NOT real market data)")
+        print("STEP 1: Generating research-calibrated SYNTHETIC price data (--synthetic set -- "
+              "NOT real market data; see docs/data_research.md)")
     else:
         print("STEP 1: Downloading / loading market data")
     print("=" * 70)
     if args.synthetic:
-        prices = generate_synthetic_prices(
+        prices = generate_research_calibrated_prices(
             args.tickers, cache_path=f"{args.data_dir}/prices_synthetic.csv"
         )
     else:
@@ -102,6 +108,13 @@ def main():
     corr = correlation_table(log_returns)
     corr.to_csv(f"{args.results_dir}/asset_correlation.csv")
     print(corr.round(2))
+
+    if args.synthetic:
+        print("\nStylized-facts validation (does the synthetic data actually reproduce the "
+              "documented properties of real returns? see docs/data_research.md):")
+        facts_df = stylized_facts_report(log_returns)
+        facts_df.to_csv(f"{args.results_dir}/stylized_facts_report.csv")
+        print(facts_df.round(4))
 
     # ------------------------------------------------------------------
     # Step 2: Scaling-study splits (fixed eval window, growing training prefix)
@@ -143,6 +156,7 @@ def main():
         smoke_results = run_scaling_grid(
             smoke, models=smoke_models, seeds=args.seeds[:2] or [0], epochs=2,
             checkpoint_path=f"{args.results_dir}/smoketest.csv",
+            verbose_epochs=not args.quiet_epochs,
         )
         print(smoke_results)
         print("Smoke test passed -- proceeding to the full grid.\n")
@@ -164,6 +178,7 @@ def main():
         epochs=args.epochs,
         checkpoint_path=f"{args.results_dir}/scaling_grid_results.csv",
         use_hparam_search=args.hparam_search,
+        verbose_epochs=not args.quiet_epochs,
     )
 
     print("\nPer-model summary (mean +/- SD across ticker/train_size/seed runs):")

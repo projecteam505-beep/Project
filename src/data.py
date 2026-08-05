@@ -136,6 +136,114 @@ def generate_synthetic_prices(
     return prices
 
 
+def generate_research_calibrated_prices(
+    tickers: List[str] = None,
+    n_obs: int = 6000,
+    seed: int = 0,
+    cache_path: str = None,
+) -> pd.DataFrame:
+    """Generate proxy price series calibrated to the empirical stylized facts
+    of real financial returns (see docs/data_research.md), for use when a
+    real market-data provider is unreachable (e.g. yfinance blocked by a
+    sandbox/firewall network policy).
+
+    Implements a GJR-GARCH(1,1) conditional-variance process with
+    standardized Student-t innovations:
+
+        r_t       = mu + eps_t
+        eps_t     = sigma_t * z_t,   z_t ~ standardized Student-t(nu)
+        sigma_t^2 = omega + (alpha + gamma * 1[eps_{t-1}<0]) * eps_{t-1}^2
+                    + beta * sigma_{t-1}^2
+
+    which is the minimal standard model reproducing, simultaneously:
+      - near-zero linear autocorrelation in raw returns (Fama, 1965),
+      - heavy tails / excess kurtosis (Mandelbrot, 1963),
+      - volatility clustering (Engle, 1982; Bollerslev, 1986),
+      - the leverage effect -- negative shocks raise future volatility more
+        than positive ones of the same size (Black, 1976; Glosten,
+        Jagannathan & Runkle, 1993).
+
+    Per-asset parameters are drawn independently from literature-typical
+    ranges for daily-equity-like series (see docs/data_research.md for the
+    exact ranges and citations). Call `stylized_facts_report()` on the
+    resulting log-returns to verify these properties empirically rather than
+    taking the calibration on faith.
+
+    STILL NOT REAL MARKET DATA -- a calibrated statistical proxy only.
+    """
+    tickers = tickers or DEFAULT_TICKERS
+    rng = np.random.default_rng(seed)
+    idx = pd.bdate_range("2005-01-03", periods=n_obs)
+
+    frames = {}
+    for t in tickers:
+        omega = rng.uniform(1e-6, 4e-6)
+        alpha = rng.uniform(0.03, 0.08)
+        gamma = rng.uniform(0.03, 0.12)
+        beta = rng.uniform(0.85, 0.90)
+        nu = rng.uniform(4.0, 8.0)
+        mu = rng.uniform(-0.0001, 0.0003)
+
+        # Student-t innovations scaled to unit variance before applying sigma_t.
+        t_scale = np.sqrt((nu - 2) / nu)
+
+        persistence = alpha + gamma / 2 + beta
+        sigma2 = omega / max(1e-6, (1 - persistence))  # unconditional variance (stationary start)
+        eps_prev = 0.0
+        sigma2_prev = sigma2
+
+        returns = np.empty(n_obs)
+        for k in range(n_obs):
+            leverage_term = gamma if eps_prev < 0 else 0.0
+            sigma2_t = omega + (alpha + leverage_term) * eps_prev ** 2 + beta * sigma2_prev
+            sigma_t = np.sqrt(max(sigma2_t, 1e-12))
+            z = rng.standard_t(nu) * t_scale
+            eps_t = sigma_t * z
+            returns[k] = mu + eps_t
+            eps_prev = eps_t
+            sigma2_prev = sigma2_t
+
+        log_price = np.cumsum(returns) + np.log(100.0)
+        frames[t] = pd.Series(np.exp(log_price), index=idx)
+
+    prices = pd.concat(frames.values(), axis=1)
+    prices.columns = list(frames.keys())
+
+    if cache_path:
+        os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+        prices.to_csv(cache_path)
+
+    return prices
+
+
+def stylized_facts_report(log_returns: pd.DataFrame) -> pd.DataFrame:
+    """Empirically check each asset's log-returns against the stylized facts
+    documented in docs/data_research.md, rather than assuming the generator's
+    calibration worked. For a well-calibrated series, expect:
+      - acf_lag1_returns          ~ 0        (near-zero linear autocorrelation)
+      - acf_lag1_squared_returns  > 0        (volatility clustering)
+      - excess_kurtosis           > 0        (heavier-than-Gaussian tails)
+      - leverage_corr             < 0        (negative shocks raise future vol more)
+    """
+    from scipy import stats as _stats
+
+    rows = {}
+    for col in log_returns.columns:
+        r = log_returns[col].to_numpy()
+        r_series = log_returns[col]
+        rows[col] = {
+            "n_obs": len(r),
+            "mean": float(r.mean()),
+            "std": float(r.std()),
+            "excess_kurtosis": float(_stats.kurtosis(r)),
+            "skew": float(_stats.skew(r)),
+            "acf_lag1_returns": float(r_series.autocorr(1)),
+            "acf_lag1_squared_returns": float((r_series ** 2).autocorr(1)),
+            "leverage_corr_rt_vs_rsq_tplus1": float(np.corrcoef(r[:-1], r[1:] ** 2)[0, 1]),
+        }
+    return pd.DataFrame(rows).T
+
+
 # ----------------------------------------------------------------------------
 # Returns + stationarity
 # ----------------------------------------------------------------------------

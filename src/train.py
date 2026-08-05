@@ -106,13 +106,19 @@ def _inverse(pred_scaled: np.ndarray, mean: float, std: float) -> np.ndarray:
 
 
 def _fit_with_val_selection(model, u_train, v_train, u_val, v_val, epochs, batch_size, g,
-                             step_fn, predict_fn, end_epoch_fn=None):
+                             step_fn, predict_fn, scaler_mean, scaler_std,
+                             end_epoch_fn=None, verbose=True, log_prefix=""):
     """Train for `epochs`, evaluating on the validation split after every
     epoch, and return the snapshot with the lowest validation RMSE -- a
     poor-man's early stopping that avoids reporting whatever the final epoch
     happens to land on (which can be a lucky/unlucky outlier, especially at
     small train sizes). Also returns that best validation RMSE (scaled
     space) so callers can use it as a model-selection signal.
+
+    When `verbose` (default), prints validation RMSE and directional
+    accuracy -- both in the original (un-scaled) return units -- after every
+    single epoch, so the accuracy trajectory during training is visible in
+    the log, not just the final selected result.
     """
     best_val_rmse = float("inf")
     best_state = copy.deepcopy(model)
@@ -122,10 +128,21 @@ def _fit_with_val_selection(model, u_train, v_train, u_val, v_val, epochs, batch
         if end_epoch_fn:
             end_epoch_fn(model)
         with torch.no_grad():
-            val_pred = predict_fn(model, u_val).numpy()
-        val_rmse = rmse(val_pred, v_val)
-        if val_rmse < best_val_rmse:
-            best_val_rmse = val_rmse
+            val_pred_scaled = predict_fn(model, u_val).numpy()
+        val_rmse_scaled = rmse(val_pred_scaled, v_val)
+        improved = val_rmse_scaled < best_val_rmse
+
+        if verbose:
+            val_pred_orig = _inverse(val_pred_scaled, scaler_mean, scaler_std)
+            val_target_orig = _inverse(v_val, scaler_mean, scaler_std)
+            val_rmse_orig = rmse(val_pred_orig, val_target_orig)
+            val_diracc = directional_accuracy(val_pred_orig, val_target_orig)
+            marker = "  <- best so far" if improved else ""
+            print(f"    {log_prefix}epoch {epoch + 1:>2}/{epochs}: "
+                  f"val_RMSE={val_rmse_orig:.6g}  val_DirAcc={val_diracc:.3f}{marker}")
+
+        if improved:
+            best_val_rmse = val_rmse_scaled
             best_state = copy.deepcopy(model)
     return best_state, best_val_rmse
 
@@ -145,7 +162,8 @@ def _finalize_result(model, pred_scaled: np.ndarray, ds: PreparedDataset, val_rm
 
 
 def train_and_eval_crbm(ds: PreparedDataset, seed: int, epochs: int = DEFAULT_EPOCHS,
-                         batch_size: int = DEFAULT_BATCH_SIZE, hparams: dict = None) -> dict:
+                         batch_size: int = DEFAULT_BATCH_SIZE, hparams: dict = None,
+                         verbose: bool = True, log_prefix: str = "") -> dict:
     hp = {**DEFAULT_HPARAMS["crbm"], **(hparams or {})}
     torch.manual_seed(seed)
     g = torch.Generator().manual_seed(seed)
@@ -164,7 +182,8 @@ def train_and_eval_crbm(ds: PreparedDataset, seed: int, epochs: int = DEFAULT_EP
         return m.mean_field_predict(u)
 
     best_model, best_val_rmse = _fit_with_val_selection(
-        model, u_train, v_train, u_val, ds.v_val, epochs, batch_size, g, step_fn, predict_fn
+        model, u_train, v_train, u_val, ds.v_val, epochs, batch_size, g, step_fn, predict_fn,
+        ds.scaler_mean, ds.scaler_std, verbose=verbose, log_prefix=log_prefix,
     )
 
     with torch.no_grad():
@@ -174,7 +193,8 @@ def train_and_eval_crbm(ds: PreparedDataset, seed: int, epochs: int = DEFAULT_EP
 
 
 def train_and_eval_qcrbm(ds: PreparedDataset, seed: int, epochs: int = DEFAULT_EPOCHS,
-                          batch_size: int = DEFAULT_BATCH_SIZE, hparams: dict = None) -> dict:
+                          batch_size: int = DEFAULT_BATCH_SIZE, hparams: dict = None,
+                          verbose: bool = True, log_prefix: str = "") -> dict:
     hp = {**DEFAULT_HPARAMS["qcrbm"], **(hparams or {})}
     torch.manual_seed(seed)
     g = torch.Generator().manual_seed(seed)
@@ -193,7 +213,8 @@ def train_and_eval_qcrbm(ds: PreparedDataset, seed: int, epochs: int = DEFAULT_E
         return m.mean_field_predict(u)
 
     best_model, best_val_rmse = _fit_with_val_selection(
-        model, u_train, v_train, u_val, ds.v_val, epochs, batch_size, g, step_fn, predict_fn
+        model, u_train, v_train, u_val, ds.v_val, epochs, batch_size, g, step_fn, predict_fn,
+        ds.scaler_mean, ds.scaler_std, verbose=verbose, log_prefix=log_prefix,
     )
 
     with torch.no_grad():
@@ -203,7 +224,8 @@ def train_and_eval_qcrbm(ds: PreparedDataset, seed: int, epochs: int = DEFAULT_E
 
 
 def train_and_eval_qfeatureqrbm(ds: PreparedDataset, seed: int, epochs: int = DEFAULT_EPOCHS,
-                                 batch_size: int = DEFAULT_BATCH_SIZE, hparams: dict = None) -> dict:
+                                 batch_size: int = DEFAULT_BATCH_SIZE, hparams: dict = None,
+                                 verbose: bool = True, log_prefix: str = "") -> dict:
     hp = {**DEFAULT_HPARAMS["qfeatureqrbm"], **(hparams or {})}
     torch.manual_seed(seed)
     g = torch.Generator().manual_seed(seed)
@@ -229,7 +251,8 @@ def train_and_eval_qfeatureqrbm(ds: PreparedDataset, seed: int, epochs: int = DE
 
     best_model, best_val_rmse = _fit_with_val_selection(
         model, u_train, v_train, u_val, ds.v_val, epochs, batch_size, g,
-        step_fn, predict_fn, end_epoch_fn=end_epoch_fn,
+        step_fn, predict_fn, ds.scaler_mean, ds.scaler_std,
+        end_epoch_fn=end_epoch_fn, verbose=verbose, log_prefix=log_prefix,
     )
 
     with torch.no_grad():
@@ -239,7 +262,8 @@ def train_and_eval_qfeatureqrbm(ds: PreparedDataset, seed: int, epochs: int = DE
 
 
 def train_and_eval_qqrbm(ds: PreparedDataset, seed: int, epochs: int = DEFAULT_EPOCHS,
-                          batch_size: int = DEFAULT_BATCH_SIZE, hparams: dict = None) -> dict:
+                          batch_size: int = DEFAULT_BATCH_SIZE, hparams: dict = None,
+                          verbose: bool = True, log_prefix: str = "") -> dict:
     hp = {**DEFAULT_HPARAMS["qqrbm"], **(hparams or {})}
     torch.manual_seed(seed)
     g = torch.Generator().manual_seed(seed)
@@ -272,7 +296,8 @@ def train_and_eval_qqrbm(ds: PreparedDataset, seed: int, epochs: int = DEFAULT_E
         return m.mean_field_predict(u)[:, 0:1]
 
     best_model, best_val_rmse = _fit_with_val_selection(
-        model, u_train, v_train_p, u_val, ds.v_val, epochs, batch_size, g, step_fn, predict_fn
+        model, u_train, v_train_p, u_val, ds.v_val, epochs, batch_size, g, step_fn, predict_fn,
+        ds.scaler_mean, ds.scaler_std, verbose=verbose, log_prefix=log_prefix,
     )
 
     with torch.no_grad():
@@ -309,7 +334,8 @@ HPARAM_SEARCH_SPACE = {
 
 def train_and_eval_with_search(model_name: str, ds: PreparedDataset, seed: int,
                                 epochs: int = DEFAULT_EPOCHS, batch_size: int = DEFAULT_BATCH_SIZE,
-                                search_space: List[dict] = None) -> dict:
+                                search_space: List[dict] = None,
+                                verbose: bool = True, log_prefix: str = "") -> dict:
     """Try every candidate hparam dict for `model_name`, train each with
     validation-based model selection, and return the result for the
     candidate with the lowest validation RMSE."""
@@ -317,8 +343,11 @@ def train_and_eval_with_search(model_name: str, ds: PreparedDataset, seed: int,
     trainer = MODEL_TRAINERS[model_name]
 
     best_result = None
-    for cand_hp in space:
-        result = trainer(ds, seed, epochs=epochs, batch_size=batch_size, hparams=cand_hp)
+    for i, cand_hp in enumerate(space):
+        if verbose:
+            print(f"  {log_prefix}[candidate {i + 1}/{len(space)}] hparams={cand_hp}")
+        result = trainer(ds, seed, epochs=epochs, batch_size=batch_size, hparams=cand_hp,
+                          verbose=verbose, log_prefix=log_prefix)
         result["hparams_tried"] = cand_hp
         if best_result is None or result["val_rmse_scaled"] < best_result["val_rmse_scaled"]:
             best_result = result
@@ -336,6 +365,7 @@ def run_scaling_grid(
     epochs: int = DEFAULT_EPOCHS,
     checkpoint_path: Optional[str] = None,
     use_hparam_search: bool = False,
+    verbose_epochs: bool = True,
 ) -> pd.DataFrame:
     """Train every model on every (asset, train_size, seed) combination.
 
@@ -349,6 +379,11 @@ def run_scaling_grid(
     per model (`HPARAM_SEARCH_SPACE`) and keep whichever candidate has the
     lowest validation RMSE -- a real (if still deliberately small) search,
     instead of the single fixed `DEFAULT_HPARAMS` guess.
+
+    When `verbose_epochs` (default), every single training epoch prints its
+    validation RMSE and validation directional accuracy, so the accuracy the
+    model code actually has during training is visible run-by-run, not just
+    the final selected result. Set False to quiet this for very large grids.
     """
     models = models or list(MODEL_TRAINERS.keys())
     seeds = seeds or DEFAULT_SEEDS
@@ -377,11 +412,19 @@ def run_scaling_grid(
                     if key in done:
                         continue
                     t0 = time.time()
+                    if verbose_epochs:
+                        print(f"[{completed + 1}/{total}] {key} training...")
+                    log_prefix = f"{key} "
                     try:
                         if use_hparam_search:
-                            result = train_and_eval_with_search(model_name, ds, seed, epochs=epochs)
+                            result = train_and_eval_with_search(
+                                model_name, ds, seed, epochs=epochs,
+                                verbose=verbose_epochs, log_prefix=log_prefix,
+                            )
                         else:
-                            result = MODEL_TRAINERS[model_name](ds, seed, epochs=epochs)
+                            result = MODEL_TRAINERS[model_name](
+                                ds, seed, epochs=epochs, verbose=verbose_epochs, log_prefix=log_prefix,
+                            )
                     except Exception as e:
                         print(f"[FAIL] {key}: {e}")
                         result = {
