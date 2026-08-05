@@ -116,7 +116,9 @@ class QFeatureQRBM:
     def quantum_features(self, lag: torch.Tensor) -> torch.Tensor:
         x = self._pad_lag(lag)
         out = self.circuit(x, self.theta)
-        return torch.stack(out, dim=1)  # (batch, n_q)
+        # PennyLane's default.qubit device returns float64 regardless of the
+        # torch input dtype; cast back to float32 to match the rest of the model.
+        return torch.stack(out, dim=1).to(torch.float32)  # (batch, n_q)
 
     def gated_features(self, lag: torch.Tensor):
         z = self.quantum_features(lag)          # (batch, n_q)

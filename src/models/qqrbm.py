@@ -131,8 +131,10 @@ class QQRBM:
         u_amp = self._pad(u_context, self.dim_u)
         out = self.circuit(v_amp, u_amp, self.theta)
         n_v = len(self.v_wires)
-        q_v_raw = torch.stack(out[:n_v], dim=1)
-        q_h_raw = torch.stack(out[n_v:], dim=1)
+        # PennyLane's default.qubit device returns float64 regardless of the
+        # torch input dtype; cast back to float32 to match the rest of the model.
+        q_v_raw = torch.stack(out[:n_v], dim=1).to(torch.float32)
+        q_h_raw = torch.stack(out[n_v:], dim=1).to(torch.float32)
         return q_v_raw, q_h_raw
 
     def projected_features(self, v: torch.Tensor, u_context: torch.Tensor):

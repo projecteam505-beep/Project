@@ -117,7 +117,9 @@ class QCRBM(CRBM):
         broadcasts over a batch dimension when the input tensor has one."""
         x = self._encode_input(v, u)
         out = self.circuit(x, self.theta)  # list of H tensors, each (batch,)
-        return torch.stack(out, dim=1)  # (batch, H)
+        # PennyLane's default.qubit device returns float64 regardless of the
+        # torch input dtype; cast back to float32 to match the rest of the model.
+        return torch.stack(out, dim=1).to(torch.float32)  # (batch, H)
 
     # -- augmented hidden conditional (Eq. 22) --------------------------
     def p_h_given_v_quantum(self, v: torch.Tensor, u: torch.Tensor, q: torch.Tensor = None):
