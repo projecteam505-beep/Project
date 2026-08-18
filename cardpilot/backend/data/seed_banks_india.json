@@ -1,0 +1,99 @@
+{
+  "_note": "Benefit figures below are ILLUSTRATIVE placeholders for development/demo, structured the way real T&C data would be. Before this is shown to any real user, every value/cadence/expected_annual_usage must be verified against each bank's current, published T&Cs -- they change over time and this file will drift out of date.",
+
+  "banks": [
+    {"code": "SBI",  "name": "State Bank of India", "home_currency": "INR"},
+    {"code": "HDFC", "name": "HDFC Bank",            "home_currency": "INR"},
+    {"code": "ICICI","name": "ICICI Bank",           "home_currency": "INR"},
+    {"code": "PNB",  "name": "Punjab National Bank", "home_currency": "INR"},
+    {"code": "AMEX", "name": "American Express",     "home_currency": "USD"}
+  ],
+
+  "networks": [
+    {"code": "VISA",       "name": "Visa"},
+    {"code": "MASTERCARD", "name": "Mastercard"},
+    {"code": "RUPAY",      "name": "RuPay"},
+    {"code": "AMEX_NET",   "name": "American Express (closed-loop)"}
+  ],
+
+  "card_products": [
+    {
+      "bank_code": "SBI", "network_code": "VISA", "name": "ELITE",
+      "currency": "INR", "annual_fee": 4999,
+      "benefits": [
+        {"benefit_code": "LOUNGE_DOM", "name": "Domestic lounge access", "category": "lounge",
+         "cadence": "quarterly", "value": 1200, "expected_annual_usage": 8,
+         "notes": "illustrative -- verify against current SBI ELITE T&Cs"},
+        {"benefit_code": "MOVIE_CREDIT", "name": "Movie ticket credit", "category": "movie",
+         "cadence": "monthly", "value": 250, "expected_annual_usage": 12,
+         "notes": "illustrative -- verify against current SBI ELITE T&Cs"},
+        {"benefit_code": "MILESTONE_REWARD", "name": "Annual spend milestone reward", "category": "membership",
+         "cadence": "annual", "value": 5000, "expected_annual_usage": 1,
+         "notes": "illustrative -- verify against current SBI ELITE T&Cs"}
+      ]
+    },
+    {
+      "bank_code": "HDFC", "network_code": "VISA", "name": "Infinia",
+      "currency": "INR", "annual_fee": 12500,
+      "benefits": [
+        {"benefit_code": "LOUNGE_UNLIMITED", "name": "Unlimited domestic + intl lounge access", "category": "lounge",
+         "cadence": "per_visit", "value": 1500, "expected_annual_usage": 24,
+         "notes": "illustrative -- verify against current HDFC Infinia T&Cs"},
+        {"benefit_code": "DINING_CREDIT", "name": "Dining privilege credit", "category": "dining",
+         "cadence": "monthly", "value": 1000, "expected_annual_usage": 12,
+         "notes": "illustrative -- verify against current HDFC Infinia T&Cs"},
+        {"benefit_code": "GOLF", "name": "Complimentary golf rounds", "category": "golf",
+         "cadence": "quarterly", "value": 2000, "expected_annual_usage": 4,
+         "notes": "illustrative -- verify against current HDFC Infinia T&Cs"}
+      ]
+    },
+    {
+      "bank_code": "HDFC", "network_code": "RUPAY", "name": "Infinia (RuPay)",
+      "currency": "INR", "annual_fee": 12500,
+      "benefits": [
+        {"benefit_code": "LOUNGE_UNLIMITED", "name": "Unlimited domestic lounge access", "category": "lounge",
+         "cadence": "per_visit", "value": 1500, "expected_annual_usage": 24,
+         "notes": "illustrative -- RuPay variant, verify separately from Visa Infinia T&Cs"},
+        {"benefit_code": "DINING_CREDIT", "name": "Dining privilege credit", "category": "dining",
+         "cadence": "monthly", "value": 1000, "expected_annual_usage": 12,
+         "notes": "illustrative -- verify against current HDFC Infinia (RuPay) T&Cs"}
+      ]
+    },
+    {
+      "bank_code": "ICICI", "network_code": "MASTERCARD", "name": "Emeralde",
+      "currency": "INR", "annual_fee": 12000,
+      "benefits": [
+        {"benefit_code": "LOUNGE_DOM", "name": "Domestic lounge access", "category": "lounge",
+         "cadence": "quarterly", "value": 1200, "expected_annual_usage": 8,
+         "notes": "illustrative -- verify against current ICICI Emeralde T&Cs"},
+        {"benefit_code": "FUEL_SURCHARGE", "name": "Fuel surcharge waiver", "category": "fuel",
+         "cadence": "monthly", "value": 400, "expected_annual_usage": 12,
+         "notes": "illustrative -- verify against current ICICI Emeralde T&Cs"}
+      ]
+    },
+    {
+      "bank_code": "PNB", "network_code": "RUPAY", "name": "RuPay Select",
+      "currency": "INR", "annual_fee": 1500,
+      "benefits": [
+        {"benefit_code": "LOUNGE_DOM", "name": "Domestic lounge access", "category": "lounge",
+         "cadence": "quarterly", "value": 500, "expected_annual_usage": 4,
+         "notes": "illustrative -- verify against current PNB RuPay Select T&Cs"},
+        {"benefit_code": "FUEL_SURCHARGE", "name": "Fuel surcharge waiver", "category": "fuel",
+         "cadence": "monthly", "value": 300, "expected_annual_usage": 12,
+         "notes": "illustrative -- verify against current PNB RuPay Select T&Cs"}
+      ]
+    },
+    {
+      "bank_code": "AMEX", "network_code": "AMEX_NET", "name": "Platinum",
+      "currency": "USD", "annual_fee": 695,
+      "benefits": [
+        {"benefit_code": "LOUNGE_UNLIMITED", "name": "Centurion + Priority Pass lounge access", "category": "lounge",
+         "cadence": "per_visit", "value": 40, "expected_annual_usage": 15,
+         "notes": "illustrative -- verify against current Amex Platinum T&Cs"},
+        {"benefit_code": "DINING_CREDIT", "name": "Dining statement credit", "category": "dining",
+         "cadence": "monthly", "value": 15, "expected_annual_usage": 12,
+         "notes": "illustrative -- verify against current Amex Platinum T&Cs"}
+      ]
+    }
+  ]
+}

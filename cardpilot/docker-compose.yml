@@ -1,0 +1,32 @@
+version: "3.9"
+
+services:
+  api:
+    build: ./backend
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql+psycopg2://cardpilot:cardpilot@db:5432/cardpilot
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      - db
+      - redis
+
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: cardpilot
+      POSTGRES_PASSWORD: cardpilot
+      POSTGRES_DB: cardpilot
+    ports:
+      - "5432:5432"
+    volumes:
+      - cardpilot_pg_data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+volumes:
+  cardpilot_pg_data:
